@@ -12,7 +12,7 @@ load_dotenv()
 # ===================== 文件路径配置 =====================
 FAISS_INDEX_PATH = "first_faiss.index"
 MAPPING_JSON_PATH = "index_mapping.json"
-SAVE_SUMMARY_PATH = "summary.txt"
+TEMP_SUMMARY_DIR = "temp_summary"      # 摘要按会话ID存放，不参与知识库检索
 
 # ===================== LLM & Embedding 模型配置 =====================
 LLM_MODEL_NAME = "qwen2:7b"
@@ -38,7 +38,7 @@ UPLOAD_MAX_FILE_COUNT = 5           # 单次最多 5 个文件
 UPLOAD_TOP_K_TEMP = 3               # 临时文档 Chroma 检索返回数
 
 # ===================== 智能体循环控制 =====================
-MAX_TOOL_ROUNDS = 2                  # ReAct 最大工具调用轮数，超出强制 LLM 文本回答
+MAX_TOOL_ROUNDS = 3                  # ReAct 最大工具调用轮数，超出强制 LLM 文本回答
 
 # ===================== 第三方服务密钥 =====================
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")

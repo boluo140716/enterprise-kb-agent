@@ -15,6 +15,7 @@ Thumbs.db
 .DS_Store
 # 生成的导出文档
 summary.txt
+temp_summary/
 # 本地测试txt文档，仅保留requirements.txt
 *.txt
 !requirements.txt

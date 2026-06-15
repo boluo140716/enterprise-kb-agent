@@ -9,6 +9,7 @@ from langchain_ollama import OllamaEmbeddings
 from settings import (
     FAISS_INDEX_PATH,
     MAPPING_JSON_PATH,
+    TEMP_SUMMARY_DIR,
     EMBED_MODEL_NAME,
     TOP_K_FIRST_FAISS
 )
@@ -31,20 +32,26 @@ def init_faiss_store():
         faiss_index = faiss.read_index(FAISS_INDEX_PATH)
         with open(MAPPING_JSON_PATH, "r", encoding="utf-8") as f:
             map_data = json.load(f)
-        index2abs = map_data["index2abs"]
-        index2full = map_data["index2full"]
+        # json.load 会将整数键转为字符串，需要转回 int，否则 faiss_search 返回的 int 索引无法命中
+        index2abs = {int(k): v for k, v in map_data["index2abs"].items()}
+        index2full = {int(k): v for k, v in map_data["index2full"].items()}
         return
 
     logger.info("无FAISS缓存，开始全量构建索引")
-    # 遍历当前目录所有文档
+    # 遍历当前目录所有文档（排除 temp_summary 摘要临时文件夹）
     current_dir = os.path.dirname(os.path.abspath(__file__))
     root_dir = os.path.dirname(current_dir)
     supported_ext = (".txt", ".pdf", ".docx")
     file_paths = []
 
     for filename in os.listdir(root_dir):
+        full_path = os.path.join(root_dir, filename)
+        # 跳过 temp_summary 临时摘要目录
+        if os.path.isdir(full_path) and filename == TEMP_SUMMARY_DIR:
+            logger.info(f"跳过临时摘要目录: {TEMP_SUMMARY_DIR}")
+            continue
         if filename.lower().endswith(supported_ext):
-            file_paths.append(os.path.join(root_dir, filename))
+            file_paths.append(full_path)
 
     # 延迟导入，避免循环依赖
     from document.loader import load_documents
