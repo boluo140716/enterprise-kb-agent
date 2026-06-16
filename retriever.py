@@ -2,6 +2,7 @@
 检索聚合层：双层分级RAG + 向量/关键词混合检索 + LRU 内存缓存
 上层 Agent 只调用此模块，不感知底层细节
 """
+import copy
 from functools import lru_cache
 from langchain_chroma import Chroma
 from langchain_classic.retrievers import EnsembleRetriever
@@ -10,7 +11,6 @@ from settings import TOP_K_SUB_RETRIEVE, ENSEMBLE_WEIGHT_VECTOR, ENSEMBLE_WEIGHT
 from document.vector_store import faiss_search, index2full, embeddings
 from document.splitter import detail_splitter
 from log_config import logger
-import time
 
 
 @lru_cache(maxsize=128)
@@ -27,7 +27,6 @@ def multi_hybrid_retrieve(query: str):
     logger.info(f"检索(缓存未命中): {query[:80]}...")
 
     valid_index = faiss_search(query)
-    time.sleep(0.05)  # 轻量限速，避免压垮本地 Ollama embedding
     if not valid_index:
         return []
 
@@ -57,4 +56,4 @@ def multi_hybrid_retrieve(query: str):
         retrievers=[vec_ret, bm25_ret],
         weights=[ENSEMBLE_WEIGHT_VECTOR, ENSEMBLE_WEIGHT_BM25]
     )
-    return hybrid_ret.invoke(query)
+    return copy.deepcopy(hybrid_ret.invoke(query))

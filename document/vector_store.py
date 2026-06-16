@@ -5,18 +5,22 @@ import os
 import json
 import faiss
 import numpy as np
-from langchain_ollama import OllamaEmbeddings
+from langchain_community.embeddings import DashScopeEmbeddings
 from settings import (
     FAISS_INDEX_PATH,
     MAPPING_JSON_PATH,
     TEMP_SUMMARY_DIR,
     EMBED_MODEL_NAME,
-    TOP_K_FIRST_FAISS
+    TOP_K_FIRST_FAISS,
+    BAILIAN_API_KEY,
 )
 from log_config import logger
 
-# 初始化向量化模型
-embeddings = OllamaEmbeddings(model=EMBED_MODEL_NAME)
+# 初始化向量化模型（阿里百炼 DashScope）
+embeddings = DashScopeEmbeddings(
+    model=EMBED_MODEL_NAME,
+    dashscope_api_key=BAILIAN_API_KEY,
+)
 
 # 全局FAISS缓存变量
 faiss_index = None
@@ -70,8 +74,8 @@ def init_faiss_store():
         abstract_list.append(abs_text)
         doc_full_map[abs_text] = full_text
 
-    # 向量化并构建FAISS
-    embed_arr = [embeddings.embed_query(text) for text in abstract_list]
+    # 向量化并构建FAISS（批量嵌入，单次 HTTP 请求，避免 N 次往返）
+    embed_arr = embeddings.embed_documents(abstract_list)
     embed_np = np.array(embed_arr, dtype=np.float32)
     dim = embed_np.shape[1]
 
@@ -91,6 +95,9 @@ def init_faiss_store():
 
 def faiss_search(query: str) -> list[int]:
     """FAISS一级向量检索，返回有效文档下标"""
+    if faiss_index is None:
+        logger.error("FAISS 索引未初始化，无法检索")
+        return []
     q_vec = np.array([embeddings.embed_query(query)], dtype=np.float32)
     _, idxs = faiss_index.search(q_vec, TOP_K_FIRST_FAISS)
     hit_list = idxs[0].tolist()

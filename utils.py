@@ -6,4 +6,6 @@ def format_retrieve_docs(docs) -> str:
     """
     将检索到的文档列表拼接为纯文本字符串
     """
+    if not docs:
+        return ""
     return "\n\n".join(doc.page_content for doc in docs)

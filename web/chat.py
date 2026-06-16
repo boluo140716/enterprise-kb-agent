@@ -9,8 +9,8 @@ from log_config import logger
 import session_store
 from web.session_utils import _ensure_session_id, _get_summary_dir, _extract_answer
 
-# 保存/导出关键词白名单（与 prompts.py SYS_PROMPT 保持同步）
-SAVE_KEYWORDS = ["总结并保存", "导出文档", "保存总结", "另存为", "保存到文件", "导出为txt"]
+# 保存/导出关键词白名单（单一数据源：来自 prompts.py）
+from prompts import SAVE_KEYWORDS
 
 
 def _is_save_request(user_input: str) -> bool:
@@ -79,8 +79,10 @@ async def chat_respond(user_input, chat_history, session_state):
         # ============ 步骤 3：流式生成助手回答 ============
         loading_replaced = False
         try:
+            graph_config = {"configurable": {"thread_id": sid}}
             async for event in agent_app.astream_events(
                 {"messages": [HumanMessage(content=user_input)]},
+                config=graph_config,
                 version="v2"
             ):
                 try:
@@ -100,16 +102,17 @@ async def chat_respond(user_input, chat_history, session_state):
                     logger.warning(f"流式 chunk 异常，跳过: {chunk_err}")
                     continue
 
-            # 回退：未捕获到任何 token → invoke 补充
+            # 回退：未捕获到任何 token → ainvoke 补充（异步非阻塞）
             if not loading_replaced:
                 try:
-                    result = agent_app.invoke({
-                        "messages": [HumanMessage(content=user_input)]
-                    })
+                    result = await agent_app.ainvoke(
+                        {"messages": [HumanMessage(content=user_input)]},
+                        config=graph_config,
+                    )
                     answer = _extract_answer(result)
                     chat_history[-1]["content"] = answer
                 except Exception as invoke_err:
-                    logger.error(f"回退 invoke 异常: {invoke_err}", exc_info=True)
+                    logger.error(f"回退 ainvoke 异常: {invoke_err}", exc_info=True)
                     chat_history[-1]["content"] = "抱歉，系统处理超时，请缩短问题后重试。"
 
             # ============ 仅保存类提问：检查摘要 → 嵌入卡片 ============
@@ -151,7 +154,7 @@ async def chat_respond(user_input, chat_history, session_state):
                         if consumed_file:
                             try:
                                 shown_path = consumed_file + ".shown"
-                                os.rename(consumed_file, shown_path)
+                                os.replace(consumed_file, shown_path)
                                 logger.info(f"摘要文件已标记为已读: {shown_path}")
                             except Exception:
                                 pass

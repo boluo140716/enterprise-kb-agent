@@ -4,27 +4,33 @@ LangGraph 业务节点：ReAct 思考节点 + 工具执行节点
 """
 import contextvars
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
-from langchain_ollama import ChatOllama
-from settings import LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_GPU_NUM, MAX_TOOL_ROUNDS
+from langchain_openai import ChatOpenAI
 from prompts import SYS_PROMPT
 from tools.agent_tools import tool_list
 from log_config import logger
-
+from settings import LLM_MODEL_NAME, LLM_TEMPERATURE,MAX_TOOL_ROUNDS, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL
 # 知识库检索结果缓存（ContextVar 实现，多标签页/多请求隔离）
 # LangGraph 会丢弃 AgentState TypedDict 中未声明的 key，因此使用 ContextVar 旁路缓存
 _kb_docs_cache = contextvars.ContextVar("kb_docs_cache", default="")
 
-# 初始化 LLM 实例
-# 注意：numa 是 Ollama 服务端配置（启动时 OLLAMA_NUMA=true），不是 chat API 参数
-# 不要在 extra_kwargs 中传递，否则新版 ollama 客户端会拒绝
-llm = ChatOllama(
-    model=LLM_MODEL_NAME,
-    temperature=LLM_TEMPERATURE,
-    num_gpu=LLM_GPU_NUM,
-)
+# LLM 实例（懒加载，避免 import 时阻塞）
+_llm = None
+
+
+def _get_llm():
+    """获取 LLM 实例（懒加载单例）"""
+    global _llm
+    if _llm is None:
+        _llm = ChatOpenAI(
+            model=LLM_MODEL_NAME,
+            temperature=LLM_TEMPERATURE,
+            api_key=DEEPSEEK_API_KEY,
+            base_url=DEEPSEEK_BASE_URL,
+        )
+    return _llm
 
 # 上下文截断上限（字符数），约 2500~3000 tokens，避免消息膨胀拖慢 CPU 推理
-MAX_CONTEXT_CHARS = 10000
+MAX_CONTEXT_CHARS = 20000
 
 
 def _compress_tool_results(tool_msgs: list, max_chars: int) -> list:
@@ -61,11 +67,10 @@ def _truncate_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> li
     固定分段保留策略（不修改 state["docs"]）：
       系统提示词  →  永久保留
       用户提问(HumanMessage)  →  永久保留
-      全部 ToolMessage 检索结果  →  永久保留
-      AI 历史对话(AIMessage)  →  仅删减末尾部分
+      AI 历史对话(AIMessage)  →  永久保留
+      检索结果(ToolMessage)  →  优先删减（新问题会重新检索，旧结果价值最低）
 
-    保持时间顺序不变（不重排），仅从末尾逐条删除 AIMessage 直到不超过上限。
-    知识库检索分片绝不丢弃；消息裁剪不影响文档可用性。
+    保持时间顺序不变（不重排），从末尾逐条删除 ToolMessage 直到不超过上限。
     """
     if len(messages) <= 2:
         return messages
@@ -75,36 +80,36 @@ def _truncate_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> li
     if total <= max_chars:
         return messages
 
-    # 从末尾逐条删除 AIMessage（保留 SystemMsg / HumanMessage / ToolMessage）
+    # 从末尾逐条删除 ToolMessage（保留 SystemMsg / HumanMessage / AIMessage）
     result = list(messages)
     while len(result) > 1:
         current_total = sum(len(str(m.content)) for m in result)
         if current_total <= max_chars:
             break
 
-        # 从后往前找第一个可删除的 AIMessage（不是 system 提示词）
+        # 从后往前找第一个可删除的 ToolMessage
         dropped = False
         for i in range(len(result) - 1, 0, -1):
-            if isinstance(result[i], AIMessage):
+            if isinstance(result[i], ToolMessage):
                 result.pop(i)
                 dropped = True
                 break
 
         if not dropped:
-            # 没有可删除的 AIMessage，压缩 ToolMessage 后退出
+            # 没有可删除的 ToolMessage，压缩 AIMessage 后退出
             break
 
-    # 最终兜底：若仍超限，等比压缩 ToolMessage
+    # 最终兜底：若仍超限，等比压缩 AIMessage
     final_total = sum(len(str(m.content)) for m in result)
     if final_total > max_chars:
-        tool_indices = [i for i, m in enumerate(result) if isinstance(m, ToolMessage)]
-        if tool_indices:
-            tool_chars = sum(len(str(result[i].content)) for i in tool_indices)
+        ai_indices = [i for i, m in enumerate(result) if isinstance(m, AIMessage)]
+        if ai_indices:
+            tool_chars = sum(len(str(result[i].content)) for i in ai_indices)
             other_chars = final_total - tool_chars
             budget = max(500, max_chars - other_chars)
-            tool_msgs = [result[i] for i in tool_indices]
-            compressed = _compress_tool_results(tool_msgs, budget)
-            for idx, new_msg in zip(tool_indices, compressed):
+            ai_msgs = [result[i] for i in ai_indices]
+            compressed = _compress_tool_results(ai_msgs, budget)
+            for idx, new_msg in zip(ai_indices, compressed):
                 result[idx] = new_msg
 
     if len(result) < len(messages):
@@ -126,14 +131,25 @@ def agent_think_node(state):
     docs_cache = _kb_docs_cache.get()
 
     # 回退：若 ContextVar 未命中（LangGraph 可能隔离节点上下文），
-    # 从 state["messages"] 中提取已有的 KB 检索结果
+    # 从 state["messages"] 中提取已有的 search_knowledge_base 检索结果
     if not docs_cache:
-        for msg in state.get("messages", []):
-            if isinstance(msg, ToolMessage) and msg.content and len(msg.content.strip()) > 100:
+        for i, msg in enumerate(state.get("messages", [])):
+            if isinstance(msg, ToolMessage) and msg.content and len(msg.content.strip()) > 10:
                 if not msg.content.startswith("[工具异常]") and not msg.content.startswith("[系统错误]"):
-                    docs_cache = msg.content
-                    _kb_docs_cache.set(docs_cache)
-                    break
+                    # 校验消息来自 search_knowledge_base（非 search_online 等）
+                    # 向前查找对应的 AIMessage tool_call 确认工具名称
+                    for j in range(i - 1, -1, -1):
+                        prev = state["messages"][j]
+                        if hasattr(prev, "tool_calls"):
+                            for tc in prev.tool_calls:
+                                if tc.get("id") == msg.tool_call_id and tc.get("name") == "search_knowledge_base":
+                                    docs_cache = msg.content
+                                    _kb_docs_cache.set(docs_cache)
+                                    break
+                            if docs_cache:
+                                break
+                    if docs_cache:
+                        break
 
     # 注入缓存的知识库文档（不受消息裁剪影响），确保 LLM 始终可见
     if docs_cache:
@@ -146,26 +162,62 @@ def agent_think_node(state):
     else:
         raw_messages = [HumanMessage(content=SYS_PROMPT)] + state["messages"]
 
+    # 消除系统提示词重复注入：多轮 ReAct + 多轮对话中只保留最新一份 SYS_PROMPT
+    # 多轮对话场景：不同轮次可能检索到不同 KB 文档，保留最新的 enhanced_prompt 确保 LLM 看到最新上下文
+    deduped = []
+    for msg in raw_messages:
+        if isinstance(msg, HumanMessage) and str(msg.content).startswith(SYS_PROMPT[:50]):
+            # 找到之前的系统提示词位置，移除旧版，后续追加新版
+            for j in range(len(deduped) - 1, -1, -1):
+                if isinstance(deduped[j], HumanMessage) and str(deduped[j].content).startswith(SYS_PROMPT[:50]):
+                    deduped.pop(j)
+                    break
+        deduped.append(msg)
+    raw_messages = deduped
+
     messages = _truncate_messages(raw_messages)
 
     # 统计已执行工具轮数，判断是否需要强制文本回答
     tool_count = sum(1 for m in state["messages"] if isinstance(m, ToolMessage))
     force_answer = tool_count >= MAX_TOOL_ROUNDS
 
-    # 知识库去重：已检索到有效文档 → 强制 LLM 基于文档直接回答，不绑定任何工具
-    # qwen2:7b 在绑定工具时即使已知答案也倾向输出空内容，故直接切到纯文本模式
-    if docs_cache:
-        force_answer = True
-        logger.info("知识库已缓存有效文档，跳过工具绑定，强制 LLM 基于文档直接回答")
+    # 知识库去重：KB 工具始终可用（多轮对话中每轮可能需要检索不同信息）
+    # 仅当 tool_count 达到上限时才绑定空工具列表强制文本回答
+    # LRU 缓存在 retriever.py 处理重复查询的性能优化
+    available_tools = list(tool_list)
+
+    llm = _get_llm()
 
     if force_answer:
-        # 不绑定工具，强制 LLM 给出最终文本回答
+        # 已达工具上限：不绑定工具，强制 LLM 给出最终文本回答
         logger.info(f"强制纯文本回答模式 (工具轮数 {tool_count}/{MAX_TOOL_ROUNDS})")
         ai_msg = llm.invoke(messages)
     else:
-        # 未达上限：绑定全部工具，LLM 自行决定调用工具或直接回答
-        llm_with_tools = llm.bind_tools(tool_list)
+        # 未达上限：绑定工具，LLM 自行决定调用工具或直接回答
+        llm_with_tools = llm.bind_tools(available_tools)
         ai_msg = llm_with_tools.invoke(messages)
+
+        # qwen2:7b 兼容：有文档缓存但绑了工具时可能输出空内容
+        # 此时退回到纯文本模式重试一次
+        if docs_cache and not ai_msg.content and not (hasattr(ai_msg, 'tool_calls') and ai_msg.tool_calls):
+            logger.info("工具绑定模式下 KB 问答输出为空，回退到纯文本模式")
+            ai_msg = llm.invoke(messages)
+
+    # 清理：有 KB 缓存但 LLM 仍输出 <tool_call> 伪文本时，重新提取答案
+    # qwen2:7b 在纯文本模式下仍可能输出 tool_call XML 字符串（模型训练遗留行为）
+    if docs_cache and ai_msg.content and "<tool_call>" in str(ai_msg.content):
+        import re
+        stripped = re.sub(r'<tool_call>.*?</tool_call>', '', str(ai_msg.content), flags=re.DOTALL).strip()
+        if stripped:
+            ai_msg = AIMessage(content=stripped)
+        else:
+            logger.info("<tool_call> 伪文本无有效内容，重试纯文本回答")
+            ai_msg = llm.invoke(messages)
+            # 二次回退：直接移除残留的 tool_call 文本
+            if "<tool_call>" in str(ai_msg.content):
+                ai_msg = AIMessage(content=re.sub(
+                    r'<tool_call>.*?</tool_call>', '', str(ai_msg.content), flags=re.DOTALL
+                ).strip() or "根据已检索到的企业制度文档，无法直接回答该问题。请尝试更具体的提问方式。")
 
     return {"messages": [ai_msg]}
 
@@ -204,7 +256,7 @@ def tool_execute_node(state):
 
         tool_msg_collect.append(ToolMessage(
             content=content,
-            tool_call_id=call_info["id"]
+            tool_call_id=call_info.get("id", "")
         ))
 
     return {"messages": tool_msg_collect}

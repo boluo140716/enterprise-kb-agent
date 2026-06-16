@@ -98,20 +98,22 @@ def handle_upload(files, session_state):
                 fail_files.append(file_name)
                 continue
 
-            # 生成摘要（取前 120 字符）
-            full_text = docs[0].page_content if docs else ""
+            # 生成摘要（拼接所有页面后取前 120 字符）
+            full_text = "".join(doc.page_content for doc in docs)
             summary = full_text[:120].replace("\n", " ").strip()
             if len(full_text) > 120:
                 summary += "..."
 
-            # 精细分片
+            # 精细分片（记录单文件增量分片数）
+            before_count = len(all_chunks)
             for doc in docs:
                 chunks = detail_splitter.split_text(doc.page_content)
                 all_chunks.extend(chunks)
+            file_chunk_count = len(all_chunks) - before_count
 
             success_files.append(file_name)
             file_summaries.append({"name": file_name, "summary": summary})
-            logger.info(f"上传文件解析成功: {file_name}, 分片数: {len(all_chunks) if docs else 0}")
+            logger.info(f"上传文件解析成功: {file_name}, 分片数: {file_chunk_count}")
 
         except Exception as e:
             logger.error(f"文件 {file_name} 解析失败: {e}", exc_info=True)
@@ -124,27 +126,21 @@ def handle_upload(files, session_state):
         status_lines.append("❌ 所有文件解析后均无有效内容")
         return session_state, "\n".join(status_lines)
 
-    # 第三轮：创建/更新内存 Chroma
+    # 第三轮：创建/更新内存 Chroma（增量追加，避免 O(n²) 重建）
     try:
-        # 获取已有 Chroma（若有），在其基础上追加
         existing_chroma = session_state.get("chroma")
-        all_texts = []
         if existing_chroma is not None:
-            try:
-                # 从已有 Chroma 提取 texts
-                existing_data = existing_chroma._collection.get()
-                existing_docs = existing_data.get("documents", [])
-                all_texts.extend(existing_docs)
-            except Exception as e:
-                logger.warning(f"无法读取已有 Chroma 数据，将仅使用新文件: {e}")
-        all_texts.extend(all_chunks)
-
-        new_chroma = Chroma.from_texts(
-            texts=all_texts,
-            embedding=embeddings,
-        )
+            # 已有 Chroma：增量添加新分片，不重建
+            existing_chroma.add_texts(texts=all_chunks)
+            new_chroma = existing_chroma
+        else:
+            # 首次上传：创建新 Chroma
+            new_chroma = Chroma.from_texts(
+                texts=all_chunks,
+                embedding=embeddings,
+            )
     except Exception as e:
-        logger.error(f"创建内存 Chroma 失败: {e}", exc_info=True)
+        logger.error(f"创建/更新内存 Chroma 失败: {e}", exc_info=True)
         return session_state, f"❌ 创建临时向量库失败：{str(e)}"
 
     # 更新会话状态

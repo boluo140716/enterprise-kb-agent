@@ -10,15 +10,21 @@ import os
 load_dotenv()
 
 # ===================== 文件路径配置 =====================
-FAISS_INDEX_PATH = "first_faiss.index"
-MAPPING_JSON_PATH = "index_mapping.json"
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FAISS_INDEX_PATH = os.path.join(_BASE_DIR, "first_faiss.index")
+MAPPING_JSON_PATH = os.path.join(_BASE_DIR, "index_mapping.json")
 TEMP_SUMMARY_DIR = "temp_summary"      # 摘要按会话ID存放，不参与知识库检索
 
 # ===================== LLM & Embedding 模型配置 =====================
-LLM_MODEL_NAME = "qwen2:7b"
+# LLM: DeepSeek（云端大模型）
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+LLM_MODEL_NAME = "deepseek-chat"
 LLM_TEMPERATURE = 0.3
-LLM_GPU_NUM = 0
-EMBED_MODEL_NAME = "all-minilm"
+
+# Embedding: 阿里百炼（DashScope）
+BAILIAN_API_KEY = os.getenv("BAILIAN_API_KEY", "")
+EMBED_MODEL_NAME = "text-embedding-v3"
 
 # ===================== 文本分片参数 =====================
 ABSTRACT_CHUNK_SIZE = 80
@@ -42,6 +48,12 @@ MAX_TOOL_ROUNDS = 3                  # ReAct 最大工具调用轮数，超出�
 
 # ===================== 第三方服务密钥 =====================
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+if not TAVILY_API_KEY:
+    import logging
+    logging.getLogger("KB-Agent").warning(
+        "⚠️  TAVILY_API_KEY 未设置！联网搜索功能将不可用。"
+        " 请在 .env 文件中设置 TAVILY_API_KEY=<your-key>。"
+    )
 
 # 内存缓存：相同文本只向量化一次，减少90%网络请求
 set_llm_cache(InMemoryCache())

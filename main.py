@@ -45,8 +45,11 @@ async def main():
             streamed = False
 
             # 流式输出：逐 token 打印，改善体感延迟
+            # 使用固定 thread_id 实现控制台多轮对话上下文记忆
+            graph_config = {"configurable": {"thread_id": "console"}}
             async for event in agent_app.astream_events(
                 {"messages": [HumanMessage(content=user_input)]},
+                config=graph_config,
                 version="v2"
             ):
                 try:
@@ -63,9 +66,10 @@ async def main():
 
             if not streamed:
                 # 回退：无流式 token（如纯工具调用后强制回答）
-                result = agent_app.invoke({
-                    "messages": [HumanMessage(content=user_input)]
-                })
+                result = await agent_app.ainvoke(
+                    {"messages": [HumanMessage(content=user_input)]},
+                    config=graph_config,
+                )
                 answer = _extract_answer(result)
                 print(answer)
             else:

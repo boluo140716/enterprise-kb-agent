@@ -58,10 +58,21 @@ def search_online(query: str) -> str:
     全网实时资讯检索，用于本地无数据的实时政策、日期、赛事
     :param query: 联网搜索关键词
     """
-    resp = tavily.search(query=query)
+    try:
+        resp = tavily.search(query=query, search_depth="advanced", include_answer=True)
+    except Exception as e:
+        logger.warning(f"Tavily 联网搜索失败: {type(e).__name__}: {e}")
+        return f"[联网搜索暂时不可用] Tavily API 请求失败（{type(e).__name__}）。请基于本地知识库回答，或稍后重试。"
+
     res_text = ""
-    for item in resp["results"]:
-        res_text += f"【标题】{item['title']}\n【内容】{item['content']}\n\n"
+    # Tavily AI 直接答案（如有）
+    answer = resp.get("answer", "")
+    if answer:
+        res_text += f"【直接答案】{answer}\n\n"
+    for item in resp.get("results", []):
+        title = item.get("title", "无标题")
+        content = item.get("content", "")
+        res_text += f"【标题】{title}\n【内容】{content}\n\n"
     return res_text
 
 

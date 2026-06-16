@@ -83,3 +83,10 @@ def clear_current():
     _current_save_allowed.set(False)
     _current_summary_dir.set(None)
     _current_summary_content.set(None)
+
+    # 同时清除 agent/nodes.py 中的 KB 文档缓存，防止跨请求数据泄露
+    try:
+        from agent.nodes import _kb_docs_cache
+        _kb_docs_cache.set("")
+    except ImportError:
+        pass
