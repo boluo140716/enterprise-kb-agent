@@ -2,15 +2,17 @@
 对话路由：SSE 流式响应 + 非流式回退
 """
 import json
+import os
 import traceback
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from langchain_core.messages import HumanMessage
 
 from api.models import ChatRequest, ChatResponse
 from api.dependency import inject_session, cleanup_session
 from agent.graph_builder import agent_app
 from web.session_utils import _extract_answer
+from settings import TEMP_SUMMARY_DIR
 from log_config import logger
 
 router = APIRouter(prefix="/api", tags=["对话"])
@@ -50,13 +52,42 @@ async def _stream_chat_events(user_input: str, session_id: str):
             except Exception:
                 continue
 
-        yield f"data: {json.dumps({'type': 'done', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+        # 检测是否有保存内容
+        download_url = None
+        filepath = os.path.join(TEMP_SUMMARY_DIR, session_id, "summary.txt")
+        if os.path.isfile(filepath):
+            download_url = f"/api/download/{session_id}"
+
+        yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'download_url': download_url}, ensure_ascii=False)}\n\n"
 
     except Exception as e:
         logger.error(f"SSE 流式异常: {type(e).__name__}: {e}")
         yield f"data: {json.dumps({'type': 'error', 'message': '回答生成中断，请重试'}, ensure_ascii=False)}\n\n"
     finally:
         cleanup_session()
+
+
+@router.get("/download/{session_id}")
+async def download_file(session_id: str):
+    """
+    下载保存的总结文件。
+    浏览器收到 Content-Disposition: attachment 后会弹出"另存为"对话框。
+    从文件读取（Gradio 和 FastAPI 不同进程，文件是唯一共享存储）。
+    """
+    filepath = os.path.join(TEMP_SUMMARY_DIR, session_id, "summary.txt")
+    if not os.path.isfile(filepath):
+        raise HTTPException(status_code=404, detail="没有可下载的内容，请先执行保存操作")
+
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    return Response(
+        content=content.encode("utf-8"),
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=summary_{session_id}.txt"
+        },
+    )
 
 
 @router.post("/chat/stream")
@@ -105,7 +136,14 @@ async def chat(req: ChatRequest):
             config={"configurable": {"thread_id": session_id}},
         )
         answer = _extract_answer(result)
-        return ChatResponse(answer=answer, session_id=session_id)
+
+        # 检测是否有保存内容，返回下载链接
+        download_url = None
+        filepath = os.path.join(TEMP_SUMMARY_DIR, session_id, "summary.txt")
+        if os.path.isfile(filepath):
+            download_url = f"/api/download/{session_id}"
+
+        return ChatResponse(answer=answer, session_id=session_id, download_url=download_url)
     except Exception as e:
         logger.error(f"非流式对话异常: {type(e).__name__}: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"系统异常: {str(e)}")

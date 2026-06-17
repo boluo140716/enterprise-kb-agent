@@ -23,6 +23,7 @@ def inject_session(session_id: str | None, save_allowed: bool = False) -> tuple[
 
     session_store.set_summary_dir(summary_dir)
     session_store.set_save_allowed(save_allowed)
+    session_store.set_current_session_id(session_id)
 
     return session_id, summary_dir
 

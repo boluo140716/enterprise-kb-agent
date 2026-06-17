@@ -9,6 +9,26 @@ from web.upload import handle_upload, clear_upload, clear_all
 from web.chat import chat_respond
 
 
+def _save_to_browser(chat_history, session_state):
+    """将对话历史和会话 ID 保存到浏览器 localStorage"""
+    return {
+        "session_id": session_state.get("session_id", ""),
+        "chat_history": chat_history,
+    }
+
+
+def _restore_from_browser(browser_state):
+    """从浏览器 localStorage 恢复对话历史和会话 ID"""
+    if browser_state and browser_state.get("chat_history"):
+        return (
+            browser_state["chat_history"],
+            {"chroma": None, "file_names": [], "file_summaries": [],
+             "session_id": browser_state.get("session_id", "")},
+            browser_state,
+        )
+    return [], {"chroma": None, "file_names": [], "file_summaries": [], "session_id": ""}, browser_state
+
+
 # ===================== 构建 Web 界面 =====================
 with gr.Blocks(title="企业知识库RAG智能问答系统") as demo:
     # 会话私有状态：每个浏览器标签页独立
@@ -16,8 +36,11 @@ with gr.Blocks(title="企业知识库RAG智能问答系统") as demo:
         "chroma": None,
         "file_names": [],
         "file_summaries": [],
-        "session_id": "",          # 首次提问时自动生成
+        "session_id": "",
     })
+
+    # 浏览器持久化存储：刷新不丢失对话历史
+    browser_state = gr.BrowserState({"session_id": "", "chat_history": []})
 
     gr.Markdown("""
     # 🏢 企业内部知识库智能问答Agent
@@ -66,7 +89,7 @@ with gr.Blocks(title="企业知识库RAG智能问答系统") as demo:
 
     # 对话（异步生成器，流式返回；concurrency_limit=1 串行执行，异常自动释放锁）
     chat_outputs = [input_text, chat_box, session_state]
-    submit_btn.click(
+    chat_event = submit_btn.click(
         fn=chat_respond,
         inputs=[input_text, chat_box, session_state],
         outputs=chat_outputs,
@@ -77,11 +100,32 @@ with gr.Blocks(title="企业知识库RAG智能问答系统") as demo:
         inputs=[input_text, chat_box, session_state],
         outputs=chat_outputs,
         concurrency_limit=1,
+    ).then(
+        fn=_save_to_browser,
+        inputs=[chat_box, session_state],
+        outputs=[browser_state],
+    )
+    # 对话完成后自动保存到浏览器 localStorage
+    chat_event.then(
+        fn=_save_to_browser,
+        inputs=[chat_box, session_state],
+        outputs=[browser_state],
     )
 
-    # 清空全部：同步重置聊天记录 + 上传状态 + 输入框
+    # 页面加载时从浏览器 localStorage 恢复对话历史
+    demo.load(
+        fn=_restore_from_browser,
+        inputs=[browser_state],
+        outputs=[chat_box, session_state, browser_state],
+    )
+
+    # 清空全部：同步重置聊天记录 + 上传状态 + 输入框 + 浏览器缓存
     clear_btn.click(
         fn=clear_all,
         inputs=[session_state],
         outputs=[chat_box, session_state, upload_status, input_text],
+    ).then(
+        fn=lambda: {"session_id": "", "chat_history": []},
+        inputs=[],
+        outputs=[browser_state],
     )

@@ -15,6 +15,7 @@ class ChatResponse(BaseModel):
     """非流式回退响应"""
     answer: str
     session_id: str
+    download_url: Optional[str] = Field(None, description="保存操作后返回的文件下载链接")
 
 
 class UploadResponse(BaseModel):

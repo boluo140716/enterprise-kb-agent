@@ -62,6 +62,7 @@ async def chat_respond(user_input, chat_history, session_state):
 
         # 保存门禁：仅白名单提问放行
         session_store.set_save_allowed(save_requested)
+        session_store.set_current_session_id(sid)
         if save_requested:
             logger.info(f"✅ 保存门禁已放行（检测到保存关键词）")
         else:
@@ -115,49 +116,21 @@ async def chat_respond(user_input, chat_history, session_state):
                     logger.error(f"回退 ainvoke 异常: {invoke_err}", exc_info=True)
                     chat_history[-1]["content"] = "抱歉，系统处理超时，请缩短问题后重试。"
 
-            # ============ 仅保存类提问：检查摘要 → 嵌入卡片 ============
+            # ============ 仅保存类提问：检查下载链接 ============
             if save_requested:
                 try:
-                    new_summary = session_store.get_summary_content()
-                    consumed_file = None
-
-                    if not new_summary:
-                        summary_path = os.path.join(summary_dir, "summary.txt")
-                        if os.path.isfile(summary_path):
-                            try:
-                                with open(summary_path, "r", encoding="utf-8") as f:
-                                    disk_content = f.read().strip()
-                                if disk_content:
-                                    new_summary = disk_content
-                                    consumed_file = summary_path
-                                    logger.info(f"摘要从磁盘回退读取 ({len(new_summary)} 字)")
-                            except Exception:
-                                pass
-                    else:
-                        summary_path = os.path.join(summary_dir, "summary.txt")
-                        if os.path.isfile(summary_path):
-                            consumed_file = summary_path
-
-                    if new_summary:
-                        card = (
+                    summary_path = os.path.join(summary_dir, "summary.txt")
+                    if os.path.isfile(summary_path):
+                        download_url = f"http://localhost:7863/api/download/{sid}"
+                        download_link = (
                             f"\n\n---\n\n"
-                            f"<details>\n"
-                            f"<summary>📎 已生成摘要文档（点击展开预览）</summary>\n\n"
-                            f"{new_summary}\n\n"
-                            f"</details>"
+                            f"<a href='{download_url}' download "
+                            f"style='display:inline-block;padding:8px 16px;background:#4CAF50;"
+                            f"color:white;border-radius:4px;text-decoration:none;font-size:14px;'>"
+                            f"📥 点击下载总结文件</a>"
                         )
-                        chat_history[-1]["content"] += card
-                        logger.info(f"摘要卡片已嵌入助手回复 ({len(new_summary)} 字)")
-
-                        session_store.set_summary_content(None)
-
-                        if consumed_file:
-                            try:
-                                shown_path = consumed_file + ".shown"
-                                os.replace(consumed_file, shown_path)
-                                logger.info(f"摘要文件已标记为已读: {shown_path}")
-                            except Exception:
-                                pass
+                        chat_history[-1]["content"] += download_link
+                        logger.info(f"下载链接已嵌入助手回复")
                 except Exception:
                     pass
 

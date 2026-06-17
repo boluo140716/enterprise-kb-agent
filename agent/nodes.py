@@ -219,6 +219,21 @@ def agent_think_node(state):
                     r'<tool_call>.*?</tool_call>', '', str(ai_msg.content), flags=re.DOTALL
                 ).strip() or "根据已检索到的企业制度文档，无法直接回答该问题。请尝试更具体的提问方式。")
 
+    # 假保存检测：LLM 输出"复制保存"等文本但没调工具 → 丢弃、追加提醒、强制重试
+    if not force_answer:
+        content = getattr(ai_msg, "content", "") or ""
+        has_tool_calls = hasattr(ai_msg, "tool_calls") and ai_msg.tool_calls
+        fake_patterns = ["复制保存", "复制以下", "请复制", "由于系统限制", "无法直接通过工具", "无法直接保存"]
+        if not has_tool_calls and any(p in content for p in fake_patterns):
+            logger.warning("检测到 LLM 假装保存（未调工具），追加提醒并强制重试")
+            messages.append(HumanMessage(
+                content="【系统强制提醒】你刚才没有调用 save_summary_to_txt 工具！这严重违反了规则。"
+                        "请立即调用 save_summary_to_txt 工具，将完整总结内容作为 summary_text 参数传入。"
+                        "禁止在回答中直接输出文本。"
+            ))
+            llm_with_tools = llm.bind_tools(available_tools)
+            ai_msg = llm_with_tools.invoke(messages)
+
     return {"messages": [ai_msg]}
 
 

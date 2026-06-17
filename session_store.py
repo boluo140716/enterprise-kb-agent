@@ -15,6 +15,9 @@ _current_file_info = contextvars.ContextVar('current_file_info', default=None)
 # 由 Web 层根据用户输入关键词设置，控制 save_summary_to_txt 是否允许执行
 _current_save_allowed = contextvars.ContextVar('current_save_allowed', default=False)
 
+# 当前会话 ID（供 save_summary_to_txt 工具获取 session_id）
+_current_session_id = contextvars.ContextVar('current_session_id', default=None)
+
 # ---- Summary 摘要导出 ----
 # 当前会话的摘要目录路径（temp_summary/<session_id>/）
 _current_summary_dir = contextvars.ContextVar('current_summary_dir', default=None)
@@ -52,7 +55,45 @@ def get_save_allowed() -> bool:
     return _current_save_allowed.get()
 
 
+def set_current_session_id(session_id: str):
+    """设置当前会话 ID"""
+    _current_session_id.set(session_id)
+
+
+def get_current_session_id() -> str | None:
+    """获取当前会话 ID"""
+    return _current_session_id.get()
+
+
+def set_current_session_id(session_id: str):
+    """设置当前会话 ID"""
+    _current_session_id.set(session_id)
+
+
+def get_current_session_id() -> str | None:
+    """获取当前会话 ID"""
+    return _current_session_id.get()
+
+
 # ===================== Summary =====================
+
+# 按会话 ID 存储摘要内容（供下载接口读取）
+_summary_store: dict[str, str] = {}
+
+
+def store_summary(session_id: str, content: str):
+    """按会话 ID 存储摘要内容"""
+    _summary_store[session_id] = content
+
+
+def get_stored_summary(session_id: str) -> str | None:
+    """按会话 ID 读取摘要内容"""
+    return _summary_store.get(session_id)
+
+
+def remove_stored_summary(session_id: str):
+    """下载后清理"""
+    _summary_store.pop(session_id, None)
 
 def set_summary_dir(summary_dir):
     """注入当前会话的摘要存放目录"""

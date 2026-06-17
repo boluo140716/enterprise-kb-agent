@@ -79,8 +79,7 @@ def search_online(query: str) -> str:
 @tool
 def save_summary_to_txt(summary_text: str) -> str:
     """
-    将总结内容导出到当前会话的临时摘要目录（temp_summary/<session_id>/summary.txt）
-    同时将完整文本存入 ContextVar 供 Web 页内预览。
+    将总结内容暂存，前端会弹出下载对话框让用户选择保存路径。
 
     白名单门禁：仅当 Web 层检测到用户输入包含保存关键词时才允许执行，
     否则直接返回拒绝提示，LLM 收到后应转为纯文本回答。
@@ -91,29 +90,22 @@ def save_summary_to_txt(summary_text: str) -> str:
         logger.info("save_summary_to_txt 被门禁拦截（非保存类提问），拒绝执行")
         return "[拒绝] 当前提问不需要保存文档。请直接在回答中输出文本结果，不要再调用保存工具。"
 
-    # 优先使用会话级目录（Web 多标签隔离）
-    session_dir = session_store.get_summary_dir()
-
-    if session_dir:
-        os.makedirs(session_dir, exist_ok=True)
-        filepath = os.path.join(session_dir, "summary.txt")
+    session_id = session_store.get_current_session_id()
+    if session_id:
+        # 写入文件（Gradio 和 FastAPI 不同进程，文件是唯一共享存储）
+        summary_dir = session_store.get_summary_dir() or os.path.join(TEMP_SUMMARY_DIR, session_id)
+        os.makedirs(summary_dir, exist_ok=True)
+        filepath = os.path.join(summary_dir, "summary.txt")
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(summary_text)
+            logger.info(f"摘要已保存至文件: {filepath}")
+            return "[保存成功] 文件已生成，请在界面中点击下载按钮保存到本地。"
+        except Exception as e:
+            logger.error(f"保存文件失败: {e}")
+            return f"[保存失败] {e}"
     else:
-        # 回退：控制台入口无会话概念，写到 temp_summary 根目录
-        os.makedirs(TEMP_SUMMARY_DIR, exist_ok=True)
-        filepath = os.path.join(TEMP_SUMMARY_DIR, "summary.txt")
-
-    try:
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(summary_text)
-        logger.info(f"摘要已保存: {filepath}")
-
-        # 存入 ContextVar 供 Web 预览面板读取
-        session_store.set_summary_content(summary_text)
-
-        return f"执行完成：总结已保存至 {filepath}"
-    except Exception as e:
-        logger.error(f"保存摘要失败: {e}", exc_info=True)
-        return f"[保存失败] {type(e).__name__}: {str(e)}"
+        return "[保存失败] 无法获取当前会话，请重试。"
 
 
 # 对外导出工具列表
