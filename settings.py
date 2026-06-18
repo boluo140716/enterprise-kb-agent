@@ -37,6 +37,7 @@ TOP_K_FIRST_FAISS = 3
 TOP_K_SUB_RETRIEVE = 3
 ENSEMBLE_WEIGHT_VECTOR = 0.6
 ENSEMBLE_WEIGHT_BM25 = 0.4
+TOP_K_RERANK = 3                # Rerank 后保留文档数
 
 # ===================== 上传文件参数 =====================
 UPLOAD_MAX_FILE_SIZE_MB = 10        # 单文件上限 10MB
