@@ -50,10 +50,14 @@ def init_faiss_store():
 
     for filename in os.listdir(root_dir):
         full_path = os.path.join(root_dir, filename)
-        # 跳过 temp_summary 临时摘要目录
-        if os.path.isdir(full_path) and filename == TEMP_SUMMARY_DIR:
-            logger.info(f"跳过临时摘要目录: {TEMP_SUMMARY_DIR}")
-            continue
+        # 跳过 temp_summary 临时摘要目录和 venv 虚拟环境目录
+        if os.path.isdir(full_path):
+            if filename == TEMP_SUMMARY_DIR:
+                logger.info(f"跳过临时摘要目录: {TEMP_SUMMARY_DIR}")
+                continue
+            if filename == "venv":
+                logger.info(f"跳过虚拟环境目录: {filename}")
+                continue
         if filename.lower().endswith(supported_ext):
             file_paths.append(full_path)
 

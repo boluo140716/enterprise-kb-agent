@@ -65,16 +65,6 @@ def get_current_session_id() -> str | None:
     return _current_session_id.get()
 
 
-def set_current_session_id(session_id: str):
-    """设置当前会话 ID"""
-    _current_session_id.set(session_id)
-
-
-def get_current_session_id() -> str | None:
-    """获取当前会话 ID"""
-    return _current_session_id.get()
-
-
 # ===================== Summary =====================
 
 # 按会话 ID 存储摘要内容（供下载接口读取）
@@ -94,6 +84,7 @@ def get_stored_summary(session_id: str) -> str | None:
 def remove_stored_summary(session_id: str):
     """下载后清理"""
     _summary_store.pop(session_id, None)
+    logger.info(f"已清理会话 {session_id} 内存摘要缓存")
 
 def set_summary_dir(summary_dir):
     """注入当前会话的摘要存放目录"""

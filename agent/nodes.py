@@ -80,7 +80,8 @@ def _truncate_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> li
     if total <= max_chars:
         return messages
 
-    # 从末尾逐条删除 ToolMessage（保留 SystemMsg / HumanMessage / AIMessage）
+    # 从末尾逐条删除 ToolMessage，同时清理对应 AIMessage 的 tool_calls
+    # （DeepSeek API 要求：每条 tool_calls 必须有对应的 ToolMessage 回复，否则 400 错误）
     result = list(messages)
     while len(result) > 1:
         current_total = sum(len(str(m.content)) for m in result)
@@ -91,12 +92,24 @@ def _truncate_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> li
         dropped = False
         for i in range(len(result) - 1, 0, -1):
             if isinstance(result[i], ToolMessage):
+                tool_call_id = getattr(result[i], "tool_call_id", None)
                 result.pop(i)
+                # 同步清理前面对应的 AIMessage 中的 tool_call 条目
+                if tool_call_id:
+                    for j in range(i - 1, -1, -1):
+                        prev = result[j]
+                        if hasattr(prev, "tool_calls") and prev.tool_calls:
+                            prev.tool_calls = [
+                                tc for tc in prev.tool_calls
+                                if tc.get("id") != tool_call_id
+                            ]
+                            if not prev.tool_calls:
+                                prev.tool_calls = []  # 设空列表，不删属性（避免序列化报错）
+                            break
                 dropped = True
                 break
 
         if not dropped:
-            # 没有可删除的 ToolMessage，压缩 AIMessage 后退出
             break
 
     # 最终兜底：若仍超限，等比压缩 AIMessage
@@ -107,10 +120,13 @@ def _truncate_messages(messages: list, max_chars: int = MAX_CONTEXT_CHARS) -> li
             tool_chars = sum(len(str(result[i].content)) for i in ai_indices)
             other_chars = final_total - tool_chars
             budget = max(500, max_chars - other_chars)
-            ai_msgs = [result[i] for i in ai_indices]
-            compressed = _compress_tool_results(ai_msgs, budget)
-            for idx, new_msg in zip(ai_indices, compressed):
-                result[idx] = new_msg
+            per_msg = max(200, budget // len(ai_indices))
+            for i in ai_indices:
+                content = str(result[i].content)
+                if len(content) > per_msg:
+                    half = per_msg // 2
+                    truncated = content[:half] + "\n...[内容过长已精简]...\n" + content[-half:]
+                    result[i] = AIMessage(content=truncated)
 
     if len(result) < len(messages):
         logger.info(
@@ -165,13 +181,15 @@ def agent_think_node(state):
     # 消除系统提示词重复注入：多轮 ReAct + 多轮对话中只保留最新一份 SYS_PROMPT
     # 多轮对话场景：不同轮次可能检索到不同 KB 文档，保留最新的 enhanced_prompt 确保 LLM 看到最新上下文
     deduped = []
-    for msg in raw_messages:
+    last_sys_idx = -1
+    for i, msg in enumerate(raw_messages):
         if isinstance(msg, HumanMessage) and str(msg.content).startswith(SYS_PROMPT[:50]):
-            # 找到之前的系统提示词位置，移除旧版，后续追加新版
-            for j in range(len(deduped) - 1, -1, -1):
-                if isinstance(deduped[j], HumanMessage) and str(deduped[j].content).startswith(SYS_PROMPT[:50]):
-                    deduped.pop(j)
-                    break
+            last_sys_idx = i
+
+    for i, msg in enumerate(raw_messages):
+        if isinstance(msg, HumanMessage) and str(msg.content).startswith(SYS_PROMPT[:50]):
+            if i != last_sys_idx:
+                continue  # 跳过旧版系统提示词
         deduped.append(msg)
     raw_messages = deduped
 
@@ -203,21 +221,22 @@ def agent_think_node(state):
             logger.info("工具绑定模式下 KB 问答输出为空，回退到纯文本模式")
             ai_msg = llm.invoke(messages)
 
-    # 清理：有 KB 缓存但 LLM 仍输出 <tool_call> 伪文本时，重新提取答案
-    # qwen2:7b 在纯文本模式下仍可能输出 tool_call XML 字符串（模型训练遗留行为）
-    if docs_cache and ai_msg.content and "<tool_call>" in str(ai_msg.content):
-        import re
-        stripped = re.sub(r'<tool_call>.*?</tool_call>', '', str(ai_msg.content), flags=re.DOTALL).strip()
-        if stripped:
-            ai_msg = AIMessage(content=stripped)
-        else:
-            logger.info("<tool_call> 伪文本无有效内容，重试纯文本回答")
-            ai_msg = llm.invoke(messages)
-            # 二次回退：直接移除残留的 tool_call 文本
-            if "<tool_call>" in str(ai_msg.content):
-                ai_msg = AIMessage(content=re.sub(
-                    r'<tool_call>.*?</tool_call>', '', str(ai_msg.content), flags=re.DOTALL
-                ).strip() or "根据已检索到的企业制度文档，无法直接回答该问题。请尝试更具体的提问方式。")
+    # 清理：LLM 输出伪 tool_call XML 文本时（模型未正确调用工具而是输出文本），
+    # 从文本中剥离 XML 标签，提取纯文本回答。此清理无条件执行，不依赖 docs_cache。
+    if ai_msg.content:
+        content_str = str(ai_msg.content)
+        has_xml_tool = any(tag in content_str for tag in ("<tool_call>", "<tool_calls>", "<｜tool_calls>", "<｜invoke", "</tool_call", "</｜tool_calls"))
+        if has_xml_tool:
+            import re
+            # 兼容多种格式：<tool_call>, <tool_calls>, <｜tool_calls>（全角竖线）
+            stripped = re.sub(r'<[｜tool_call|invoke|parameter|/].*?>', '', content_str, flags=re.DOTALL)
+            stripped = re.sub(r'\n\s*\n', '\n\n', stripped).strip()
+            if stripped and len(stripped) > 5:
+                logger.info("检测到伪 tool_call XML 文本，已剥离")
+                ai_msg = AIMessage(content=stripped)
+            else:
+                logger.info("伪 tool_call XML 文本无有效内容，重试纯文本回答")
+                ai_msg = llm.invoke(messages)
 
     # 假保存检测：LLM 输出"复制保存"等文本但没调工具 → 丢弃、追加提醒、强制重试
     if not force_answer:
@@ -225,14 +244,19 @@ def agent_think_node(state):
         has_tool_calls = hasattr(ai_msg, "tool_calls") and ai_msg.tool_calls
         fake_patterns = ["复制保存", "复制以下", "请复制", "由于系统限制", "无法直接通过工具", "无法直接保存"]
         if not has_tool_calls and any(p in content for p in fake_patterns):
-            logger.warning("检测到 LLM 假装保存（未调工具），追加提醒并强制重试")
-            messages.append(HumanMessage(
-                content="【系统强制提醒】你刚才没有调用 save_summary_to_txt 工具！这严重违反了规则。"
-                        "请立即调用 save_summary_to_txt 工具，将完整总结内容作为 summary_text 参数传入。"
-                        "禁止在回答中直接输出文本。"
-            ))
-            llm_with_tools = llm.bind_tools(available_tools)
-            ai_msg = llm_with_tools.invoke(messages)
+            # 再次检查工具轮数，防止重试超出上限
+            tool_count2 = sum(1 for m in messages if isinstance(m, ToolMessage))
+            if tool_count2 >= MAX_TOOL_ROUNDS:
+                logger.warning(f"检测到假保存文本但工具已达上限 {MAX_TOOL_ROUNDS}，放弃重试")
+            else:
+                logger.warning("检测到 LLM 假装保存（未调工具），追加提醒并强制重试")
+                messages.append(HumanMessage(
+                    content="【系统强制提醒】你刚才没有调用 save_summary_to_txt 工具！这严重违反了规则。"
+                            "请立即调用 save_summary_to_txt 工具，将完整总结内容作为 summary_text 参数传入。"
+                            "禁止在回答中直接输出文本。"
+                ))
+                llm_with_tools = llm.bind_tools(available_tools)
+                ai_msg = llm_with_tools.invoke(messages)
 
     return {"messages": [ai_msg]}
 

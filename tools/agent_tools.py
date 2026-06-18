@@ -4,6 +4,7 @@ Agent 自定义工具集合：知识库检索、联网搜索、文档保存
 import os
 from langchain.tools import tool
 from tavily import TavilyClient
+from duckduckgo_search import DDGS
 from settings import TAVILY_API_KEY, TEMP_SUMMARY_DIR, UPLOAD_TOP_K_TEMP
 from retriever import multi_hybrid_retrieve
 from utils import format_retrieve_docs
@@ -55,24 +56,47 @@ def search_knowledge_base(query: str) -> str:
 @tool
 def search_online(query: str) -> str:
     """
-    全网实时资讯检索，用于本地无数据的实时政策、日期、赛事
+    全网实时资讯检索，用于本地无数据的实时政策、日期、赛事。
+    Tavily 优先（结构化结果），DuckDuckGo 兜底（免费、覆盖面广）。
     :param query: 联网搜索关键词
     """
-    try:
-        resp = tavily.search(query=query, search_depth="advanced", include_answer=True)
-    except Exception as e:
-        logger.warning(f"Tavily 联网搜索失败: {type(e).__name__}: {e}")
-        return f"[联网搜索暂时不可用] Tavily API 请求失败（{type(e).__name__}）。请基于本地知识库回答，或稍后重试。"
-
     res_text = ""
-    # Tavily AI 直接答案（如有）
-    answer = resp.get("answer", "")
-    if answer:
-        res_text += f"【直接答案】{answer}\n\n"
-    for item in resp.get("results", []):
-        title = item.get("title", "无标题")
-        content = item.get("content", "")
-        res_text += f"【标题】{title}\n【内容】{content}\n\n"
+
+    # 1. Tavily 优先（结构化结果 + AI 答案）
+    try:
+        resp = tavily.search(query=query, search_depth="advanced", include_answer=True, max_results=5)
+        answer = resp.get("answer", "")
+        if answer:
+            res_text += f"【Tavily 直接答案】{answer}\n\n"
+        for item in resp.get("results", []):
+            title = item.get("title", "无标题")
+            content = item.get("content", "")
+            res_text += f"【标题】{title}\n【内容】{content}\n\n"
+        if res_text.strip():
+            logger.info(f"Tavily 搜索成功: {query[:50]}... ({len(resp.get('results', []))} 条)")
+    except Exception as e:
+        logger.warning(f"Tavily 搜索失败: {type(e).__name__}: {e}")
+
+    # 2. DuckDuckGo 兜底（Tavily 无结果或失败时补充）
+    if not res_text.strip():
+        try:
+            ddg_results = []
+            with DDGS() as ddgs:
+                for r in ddgs.text(query, max_results=5):
+                    ddg_results.append(r)
+            if ddg_results:
+                res_text += "【DuckDuckGo 搜索结果】\n\n"
+                for r in ddg_results:
+                    res_text += f"【标题】{r.get('title', '无标题')}\n【链接】{r.get('href', '')}\n【内容】{r.get('body', '')}\n\n"
+                logger.info(f"DuckDuckGo 搜索成功: {query[:50]}... ({len(ddg_results)} 条)")
+        except ImportError:
+            logger.warning("duckduckgo_search 未安装，请运行: pip install duckduckgo-search")
+        except Exception as e:
+            logger.warning(f"DuckDuckGo 搜索失败: {type(e).__name__}: {e}")
+
+    if not res_text.strip():
+        return "[联网搜索暂时不可用] 所有搜索源均失败，请基于本地知识库回答，或稍后重试。"
+
     return res_text
 
 

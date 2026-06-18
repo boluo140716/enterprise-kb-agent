@@ -39,7 +39,8 @@ def _extract_answer(result):
     last_msg = result["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls and not last_msg.content:
         for msg in reversed(result["messages"]):
-            if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-                return msg.content
+            if isinstance(msg, AIMessage) and msg.content:
+                if not hasattr(msg, "tool_calls") or not msg.tool_calls:
+                    return msg.content
         return "抱歉，未能生成有效回答，请重试。"
     return last_msg.content or "（空回答）"

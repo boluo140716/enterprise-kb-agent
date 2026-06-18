@@ -78,16 +78,15 @@ def multi_hybrid_retrieve(query: str):
         hybrid_docs = rerank_documents(query, hybrid_docs)
 
     # 分片上下文扩展：将命中分片的前后相邻分片也加入结果，恢复文档上下文
+    content_to_index = {chunk: i for i, chunk in enumerate(all_chunks)}
     expanded = list(hybrid_docs)
     seen_contents = {d.page_content for d in expanded}
     for doc in hybrid_docs:
-        # 找到该分片在 all_chunks 中的位置
-        for i, chunk in enumerate(all_chunks):
-            if chunk == doc.page_content and i in chunk_neighbors:
-                for neighbor in chunk_neighbors[i]:
-                    if neighbor not in seen_contents:
-                        seen_contents.add(neighbor)
-                        expanded.append(Document(page_content=neighbor))
-                break
+        i = content_to_index.get(doc.page_content)
+        if i is not None and i in chunk_neighbors:
+            for neighbor in chunk_neighbors[i]:
+                if neighbor not in seen_contents:
+                    seen_contents.add(neighbor)
+                    expanded.append(Document(page_content=neighbor, metadata={"source": "context_chunk"}))
 
     return expanded

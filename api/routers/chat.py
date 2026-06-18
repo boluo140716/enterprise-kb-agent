@@ -14,6 +14,7 @@ from agent.graph_builder import agent_app
 from web.session_utils import _extract_answer
 from settings import TEMP_SUMMARY_DIR
 from log_config import logger
+import session_store
 
 router = APIRouter(prefix="/api", tags=["对话"])
 
@@ -80,6 +81,9 @@ async def download_file(session_id: str):
 
     with open(filepath, "r", encoding="utf-8") as f:
         content = f.read()
+
+    # 下载后清理内存缓存
+    session_store.remove_stored_summary(session_id)
 
     return Response(
         content=content.encode("utf-8"),

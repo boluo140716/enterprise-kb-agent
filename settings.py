@@ -2,8 +2,6 @@
 全局运行配置：路径、模型参数、检索参数、分片参数
 """
 from dotenv import load_dotenv
-from langchain_core.globals import set_llm_cache
-from langchain_core.caches import InMemoryCache
 import os
 
 # 加载环境变量
@@ -45,7 +43,7 @@ UPLOAD_MAX_FILE_COUNT = 5           # 单次最多 5 个文件
 UPLOAD_TOP_K_TEMP = 3               # 临时文档 Chroma 检索返回数
 
 # ===================== 智能体循环控制 =====================
-MAX_TOOL_ROUNDS = 3                  # ReAct 最大工具调用轮数，超出强制 LLM 文本回答
+MAX_TOOL_ROUNDS = 5                  # ReAct 最大工具调用轮数，预留多步搜索空间
 
 # ===================== 第三方服务密钥 =====================
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -56,5 +54,3 @@ if not TAVILY_API_KEY:
         " 请在 .env 文件中设置 TAVILY_API_KEY=<your-key>。"
     )
 
-# 内存缓存：相同文本只向量化一次，减少90%网络请求
-set_llm_cache(InMemoryCache())
